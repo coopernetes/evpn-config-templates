@@ -1,0 +1,9 @@
+# ignore user generated configs
+configs
+configs/**
+*.txt
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class

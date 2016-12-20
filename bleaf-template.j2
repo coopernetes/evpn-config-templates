@@ -1,0 +1,233 @@
+!!!!! Apply only to -EX switches !!!!!
+system routing template-vxlan-scale
+
+!!!!! Apply only to non-EX switches (9372PX, etc)
+hardware access-list tcam region vacl 0
+hardware access-list tcam region arp-ether 256
+
+!!!!!!! ******* RELOAD AT THIS POINT ******* !!!!!!!
+
+
+feature privilege
+feature nxapi
+feature bash-shell
+feature tacacs+
+feature ospf
+feature bgp
+feature pim
+feature udld
+feature interface-vlan
+feature vn-segment-vlan-based
+feature hsrp
+feature lacp
+feature lldp
+feature bfd
+feature nv overlay
+nv overlay evpn
+feature telnet
+
+snmp-server source-interface trap mgmt0
+snmp-server contact For issues, contact ops at (XXX) XXX-XXXX
+snmp-server location Datacenter
+
+copp profile strict
+
+bfd startup-timer 0
+hardware qos ns-buffer-profile mesh
+no xml server exec-mode
+system vlan long-name
+cli alias name wr copy r s
+
+password strength-check
+logging source-interface mgmt0
+logging logfile messages 7
+logging timestamp milliseconds
+no logging console
+no logging monitor
+logging event trunk-status enable
+logging message interface type ethernet description
+logging server 10.100.0.20 6 use-vrf management
+logging server 10.100.0.21 6 use-vrf management
+no ip source-route
+no ip domain-lookup
+ip domain-name example.com
+ssh login-attempts 2
+
+spanning-tree mode rapid-pvst
+spanning-tree pathcost method long
+
+
+clock timezone UTC 0 0
+clock format show-timezone syslog
+no clock summer-time
+line console
+  exec-timeout 15
+!
+line vty
+  exec-timeout 15
+  session-limit 15
+
+ip access-list ntp_acl
+ permit ip 10.101.0.20/32 any
+ permit ip 10.101.0.21/32 any
+ permit ip 10.101.0.22/32 any
+!
+ntp server 10.101.0.20 use-vrf management
+ntp server 10.101.0.21 use-vrf management
+ntp server 10.101.0.22 use-vrf management
+ntp source-interface  mgmt0
+ntp access-group peer ntp_acl
+
+hostname {{ hostname }}
+
+
+interface mgmt0
+  vrf member management
+  ip address {{ mgmt_ipaddress }}/{{ mgmt_ipmask }}
+
+vrf context management
+  ip route 0.0.0.0/0 {{ mgmt_default_gateway }}
+
+
+interface loopback0
+  ip address {{ loopback0_ip }}/32
+  ip router ospf UNDERLAY area {{ ospf_area }}
+  ip pim sparse-mode
+
+interface loopback1
+  ip address {{ loopback1_ip }}/32
+  ip router ospf UNDERLAY area {{ ospf_area }}
+  ip pim sparse-mode
+
+
+route-map rm_vxlan_multicast_bum_groups permit 10
+  match ip multicast group {{ multicast_group_range }}
+
+
+ip pim ssm range 232.0.0.0/8
+ip pim pre-build-spt
+
+
+ip pim rp-address {{ pim_anycast_rp }} route-map rm_vxlan_multicast_bum_groups
+
+
+snmp-server enable traps ospf
+router ospf UNDERLAY
+  bfd
+  router-id {{ loopback0_ip }}
+  area {{ ospf_area }} nssa
+  area {{ ospf_area }} authentication message-digest
+
+route-map rm_pod_as{{ bgp_asn }}_out permit 1000
+  set community {{ bgp_asn }}:100
+
+
+router bgp {{ bgp_asn }}
+  router-id {{ loopback0_ip }}
+  log-neighbor-changes
+  template peer eBGP-IPv4
+    bfd
+    password bgpP@ssw0rd
+    address-family ipv4 unicast
+      send-community both
+      route-map rm_pod_as{{ bgp_asn }}_out out
+      soft-reconfiguration inbound
+  template peer iBGP-eVPN
+    remote-as {{ bgp_asn }}
+    password bgpP@ssw0rd
+    update-source loopback0
+    address-family l2vpn evpn
+      send-community extended
+      soft-reconfiguration inbound always
+    {% for spine_peer in spine_bgp_peers %}neighbor {{ spine_peer.ip }}
+      inherit peer iBGP-eVPN
+      description {{ spine_peer.description }}
+    {% endfor %}
+  vrf {{ vxlan_vrf }}
+    router-id {{ loopback0_ip }}
+    address-family ipv4 unicast
+      advertise l2vpn evpn
+      maximum-paths 4
+      maximum-paths ibgp 4
+
+
+vlan 10
+  name L3VNI
+  vn-segment {{ vxlan_vni_prefix }}0010
+
+
+fabric forwarding anycast-gateway-mac 0200.FAB0.0001
+fabric forwarding dup-host-ip-addr-detection 5 180
+
+spanning-tree port type edge bpduguard default
+
+vrf context {{ vxlan_vrf }}
+  vni {{ vxlan_vni_prefix }}0010
+  rd auto
+  address-family ipv4 unicast
+    route-target both auto
+    route-target both auto evpn
+
+interface Vlan10
+  description L3VNI
+  no shutdown
+  mtu 9216
+  vrf member {{ vxlan_vrf }}
+  ip forward
+
+interface nve1
+  no shutdown
+  source-interface loopback1
+  host-reachability protocol bgp
+  source-interface hold-down-time 360
+  member vni {{ vxlan_vni_prefix }}0010 associate-vrf
+
+feature dhcp
+service dhcp
+ip dhcp relay
+ip dhcp relay information option
+ip dhcp relay information option vpn
+no ipv6 dhcp relay
+
+
+{% for int in interfaces %}
+interface {{ int.portnum }}
+  description {{ int.description }}
+  no switchport
+  mtu 9216
+  load-interval counter 3 30
+  bfd interval 150 min_rx 150 multiplier 3
+  no ip redirects
+  ip address {{ int.ipaddress }}/31
+  no ipv6 redirects
+  ip ospf authentication message-digest
+  ip ospf message-digest-key 1 md5 ospfP@ssw0rd
+  ip ospf hello-interval 3
+  ip ospf network point-to-point
+  ip router ospf UNDERLAY area {{ ospf_area }}
+  ip ospf bfd
+  ip pim sparse-mode
+  ip pim bfd-instance
+  no shutdown
+{% endfor %}
+
+interface Ethernet1/48
+ desc M,10G SPAN
+
+monitor session 1
+  destination interface Ethernet1/48
+
+configure maintenance profile normal-mode
+  router ospf UNDERLAY
+    no isolate
+  router bgp {{ bgp_asn }}
+    no isolate
+  no ip pim isolate
+configure maintenance profile maintenance-mode
+  ip pim isolate
+  router bgp {{ bgp_asn }}
+    isolate
+  router ospf UNDERLAY
+    isolate
+configure terminal
+exit
