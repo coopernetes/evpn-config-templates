@@ -1,13 +1,7 @@
-#!/usr/local/bin/python3.5
-import argparse
-import getpass
 import ipaddress
-import json
 import os
-import pprint
 import re
 import sys
-import yaml
 from jinja2 import Template, Environment, FileSystemLoader
 
 # Get operating system type (windows or non-windows) via sys.platform
